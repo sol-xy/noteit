@@ -1,0 +1,60 @@
+# NoteIt Nginx Reverse Proxy Configuration Template
+#
+# Usage on Oracle Cloud Ubuntu/Debian VM:
+#   1. Copy to /etc/nginx/sites-available/noteit
+#   2. Replace `noteit.example.com` with your actual domain
+#   3. Enable site: sudo ln -s /etc/nginx/sites-available/noteit /etc/nginx/sites-enabled/noteit
+#   4. Test & reload: sudo nginx -t && sudo systemctl reload nginx
+#   5. Provision TLS via Certbot: sudo certbot --nginx -d <your-domain>
+
+# Rate-limit login attempts (place in http {} or conf.d if Nginx requires top-level zones).
+limit_req_zone $binary_remote_addr zone=noteit_login:10m rate=5r/m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name noteit.example.com;
+
+    # Allow large meeting audio uploads (must be >= MAX_UPLOAD_MB in .env)
+    client_max_body_size 200M;
+
+    # Security headers
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    # Rate-limit Web UI login endpoint
+    location = /api/auth/login {
+        limit_req zone=noteit_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Stream audio uploads directly to FastAPI without buffering huge files in Nginx
+    location ~ ^/api/meetings/[^/]+/audio$ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

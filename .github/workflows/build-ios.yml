@@ -1,0 +1,62 @@
+name: Build Unsigned iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - "app/**"
+      - ".github/workflows/build-ios.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/build-ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze Dart code
+        working-directory: app
+        run: flutter analyze
+
+      - name: Run Flutter unit & widget tests
+        working-directory: app
+        run: flutter test
+
+      - name: Build unsigned iOS release
+        if: github.event_name != 'pull_request'
+        working-directory: app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        if: github.event_name != 'pull_request'
+        working-directory: app
+        run: |
+          rm -rf build/ipa_staging NoteIt-unsigned.ipa
+          mkdir -p build/ipa_staging/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ipa_staging/Payload/
+          cd build/ipa_staging
+          zip -r -y ../NoteIt-unsigned.ipa Payload
+
+      - name: Upload NoteIt-unsigned.ipa artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoteIt-unsigned.ipa
+          path: app/build/NoteIt-unsigned.ipa
+          retention-days: 30

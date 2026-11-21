@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NoteIt — Meeting Notes</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="login-view" class="login-shell hidden">
+    <div class="login-card">
+      <div class="brand-row">
+        <div class="brand-mark">N</div>
+        <div>
+          <h1>NoteIt</h1>
+          <p class="muted">Personal Meeting Notepad</p>
+        </div>
+      </div>
+      <form id="login-form">
+        <label for="token-input">Personal Access Token</label>
+        <input
+          id="token-input"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Paste your AUTH_TOKEN"
+          required
+        />
+        <p id="login-error" class="error-text hidden"></p>
+        <button type="submit" class="btn btn-primary full-width">Unlock Workspace</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-row">
+          <div class="brand-mark small">N</div>
+          <span class="brand-name">NoteIt</span>
+        </div>
+        <div class="header-actions">
+          <button id="theme-toggle-btn" class="btn btn-ghost btn-sm" type="button" title="Toggle theme">Theme</button>
+          <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">Logout</button>
+        </div>
+      </div>
+
+      <div class="search-box">
+        <input id="search-input" type="search" placeholder="Search meetings, notes, transcripts..." />
+      </div>
+
+      <div id="meeting-list" class="meeting-list"></div>
+    </aside>
+
+    <main class="main-pane">
+      <div id="empty-state" class="empty-state">
+        <h2>Select a meeting</h2>
+        <p class="muted">Record on your iPhone using NoteIt or the Action Button; summaries, rough notes, transcripts, and AI Q&amp;A appear here.</p>
+      </div>
+
+      <div id="detail-view" class="detail-view hidden">
+        <header class="detail-header">
+          <div class="title-block">
+            <input id="meeting-title-input" class="title-input" type="text" aria-label="Meeting title" />
+            <div class="meta-row">
+              <span id="status-badge" class="badge"></span>
+              <span id="meta-info" class="muted"></span>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button id="retry-btn" class="btn btn-secondary btn-sm hidden" type="button">Retry</button>
+            <button id="copy-md-btn" class="btn btn-secondary btn-sm" type="button">Copy Markdown</button>
+            <button id="download-md-btn" class="btn btn-secondary btn-sm" type="button">Download .md</button>
+            <button id="delete-btn" class="btn btn-danger btn-sm" type="button">Delete</button>
+          </div>
+        </header>
+
+        <div id="error-banner" class="error-banner hidden"></div>
+
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="summary" type="button">Summary</button>
+          <button class="tab" data-tab="notes" type="button">My Notes</button>
+          <button class="tab" data-tab="transcript" type="button">Transcript</button>
+          <button class="tab" data-tab="chat" type="button">Ask AI</button>
+        </nav>
+
+        <section id="tab-summary" class="tab-panel active">
+          <div class="panel-actions">
+            <input id="custom-instructions-input" class="inline-input" type="text" placeholder="Optional instructions (e.g., focus on engineering action items)" />
+            <button id="resummarize-btn" class="btn btn-primary btn-sm" type="button">Re-summarize</button>
+          </div>
+          <article id="summary-content" class="markdown-body"></article>
+        </section>
+
+        <section id="tab-notes" class="tab-panel">
+          <div class="panel-actions">
+            <span class="muted">Anarlog-style rough notes — edit and re-summarize anytime.</span>
+            <div>
+              <button id="save-notes-btn" class="btn btn-secondary btn-sm" type="button">Save Notes</button>
+              <button id="save-resummarize-btn" class="btn btn-primary btn-sm" type="button">Save &amp; Re-summarize</button>
+            </div>
+          </div>
+          <textarea id="manual-notes-input" class="notes-editor" placeholder="Your rough meeting notes..."></textarea>
+        </section>
+
+        <section id="tab-transcript" class="tab-panel">
+          <div id="transcript-content" class="transcript-list"></div>
+        </section>
+
+        <section id="tab-chat" class="tab-panel chat-panel">
+          <div class="panel-actions">
+            <span class="muted">Grounded in this meeting's transcript, notes, and summary.</span>
+            <button id="clear-chat-btn" class="btn btn-ghost btn-sm" type="button">Clear Chat</button>
+          </div>
+          <div id="chat-messages" class="chat-messages"></div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" type="text" placeholder="Ask anything about this meeting..." required />
+            <button type="submit" class="btn btn-primary">Send</button>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
