@@ -15,12 +15,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+COPY docker-entrypoint.sh /usr/local/bin/noteit-start.sh
+RUN chmod +x /usr/local/bin/noteit-start.sh
+
 COPY app ./app
 
 RUN mkdir -p /data && chown -R noteit:noteit /app /data
 
-USER noteit
-
 EXPOSE 8080
 
-CMD ["uvicorn", "app.main:get_default_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["/usr/local/bin/noteit-start.sh"]
