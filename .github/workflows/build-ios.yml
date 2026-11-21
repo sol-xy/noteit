@@ -17,7 +17,7 @@ on:
 
 jobs:
   build-ios:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +37,10 @@ jobs:
       - name: Run Flutter unit & widget tests
         working-directory: app
         run: flutter test
+
+      - name: Log Xcode version
+        if: github.event_name != 'pull_request'
+        run: xcodebuild -version
 
       - name: Build unsigned iOS release
         if: github.event_name != 'pull_request'
