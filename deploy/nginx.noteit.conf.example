@@ -26,7 +26,7 @@ server {
     # Rate-limit Web UI login endpoint
     location = /api/auth/login {
         limit_req zone=noteit_login burst=5 nodelay;
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -36,7 +36,7 @@ server {
 
     # Stream audio uploads directly to FastAPI without buffering huge files in Nginx
     location ~ ^/api/meetings/([^/]+/audio|quick-upload)$ {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
         proxy_request_buffering off;
         proxy_read_timeout 300s;
@@ -48,7 +48,7 @@ server {
     }
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8081;
         proxy_http_version 1.1;
         proxy_read_timeout 120s;
         proxy_send_timeout 120s;
