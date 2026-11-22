@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import (
     APIRouter,
@@ -68,6 +69,40 @@ def _row_to_summary(row: dict[str, Any]) -> MeetingSummaryOut:
     )
 
 
+_ALLOWED_AUDIO_EXTENSIONS = {
+    ".m4a",
+    ".mp3",
+    ".wav",
+    ".aac",
+    ".flac",
+    ".ogg",
+    ".webm",
+    ".mp4",
+    ".caf",
+    ".3gp",
+    ".opus",
+}
+
+
+def _normalize_stt_provider(stt_provider: str | None, fallback: str) -> str:
+    if stt_provider is None or not stt_provider.strip():
+        return fallback
+    normalized = stt_provider.strip().lower()
+    if normalized not in {"auto", "groq", "gemini"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="stt_provider must be one of: auto, groq, gemini",
+        )
+    return normalized
+
+
+def _safe_audio_extension(filename: str | None) -> str:
+    ext = Path(filename or "audio.m4a").suffix.lower()
+    if ext not in _ALLOWED_AUDIO_EXTENSIONS:
+        return ".bin"
+    return ext
+
+
 def _safe_filename(title: str, meeting_id: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title.strip()).strip("-")
     if not slug:
@@ -114,6 +149,103 @@ async def create_meeting(
         status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         content=out.model_dump(),
     )
+
+
+@router.post(
+    "/quick-upload",
+    response_model=MeetingSummaryOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def quick_upload_meeting(
+    file: UploadFile = File(...),
+    title: str | None = Form(default=None),
+    manual_notes: str = Form(default=""),
+    stt_provider: str | None = Form(default=None),
+    client_id: str | None = Form(default=None),
+    db: Database = Depends(get_db),
+    worker: MeetingWorker = Depends(get_worker),
+    settings: Settings = Depends(get_settings),
+) -> MeetingSummaryOut:
+    """Create (or deduplicate) a meeting and enqueue its audio in a single request."""
+    normalized_provider = _normalize_stt_provider(stt_provider, settings.default_stt_provider)
+    normalized_title = (title or "").strip() or "Untitled Meeting"
+    if len(normalized_title) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="title must not exceed 200 characters",
+        )
+    if len(manual_notes) > 100000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="manual_notes must not exceed 100000 characters",
+        )
+    normalized_client_id = client_id.strip() if client_id is not None else None
+    if normalized_client_id == "":
+        normalized_client_id = None
+    if normalized_client_id is not None and len(normalized_client_id) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="client_id must not exceed 128 characters",
+        )
+
+    ext = _safe_audio_extension(file.filename)
+    staging_path = settings.audio_dir / f".upload-{uuid4().hex}{ext}"
+
+    try:
+        await save_upload_stream(file, staging_path, settings.max_upload_bytes)
+        probe = await probe_audio(staging_path, settings.max_audio_seconds)
+    except UploadTooLargeError as exc:
+        staging_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except AudioValidationError as exc:
+        staging_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    try:
+        row, created = await db.create_or_get_meeting(
+            client_id=normalized_client_id,
+            title=normalized_title,
+            manual_notes=manual_notes,
+            stt_provider=normalized_provider,
+        )
+        if not created and row["status"] == "created":
+            patch_fields: dict[str, Any] = {}
+            if manual_notes:
+                patch_fields["manual_notes"] = manual_notes
+            if title and title.strip():
+                patch_fields["title"] = normalized_title
+            if patch_fields:
+                patched = await db.update_meeting_fields(row["id"], **patch_fields)
+                if patched is not None:
+                    row = patched
+
+        meeting_id = row["id"]
+        dest_path = settings.audio_dir / f"{meeting_id}{ext}"
+        old_audio = row.get("audio_path")
+        if old_audio and old_audio != str(dest_path):
+            Path(old_audio).unlink(missing_ok=True)
+        staging_path.replace(dest_path)
+    except Exception:
+        staging_path.unlink(missing_ok=True)
+        raise
+
+    updated = await db.update_meeting_fields(
+        meeting_id,
+        audio_path=str(dest_path),
+        duration_seconds=round(probe.duration_seconds, 2),
+        stt_provider=normalized_provider,
+        status="queued",
+        error_message=None,
+    )
+    assert updated is not None
+    await worker.enqueue_transcription(meeting_id)
+    return _row_to_summary(updated)
 
 
 @router.get("/{meeting_id}", response_model=MeetingDetailOut)
@@ -185,19 +317,11 @@ async def upload_meeting_audio(
     if meeting is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
 
-    if stt_provider is not None:
-        normalized_provider = stt_provider.strip().lower()
-        if normalized_provider not in {"auto", "groq", "gemini"}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="stt_provider must be one of: auto, groq, gemini",
-            )
-    else:
-        normalized_provider = meeting.get("stt_provider") or settings.default_stt_provider
-
-    ext = Path(file.filename or "audio.m4a").suffix.lower()
-    if ext not in {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".webm", ".mp4"}:
-        ext = ".bin"
+    normalized_provider = _normalize_stt_provider(
+        stt_provider,
+        meeting.get("stt_provider") or settings.default_stt_provider,
+    )
+    ext = _safe_audio_extension(file.filename)
 
     dest_path = settings.audio_dir / f"{meeting_id}{ext}"
     # Remove any old audio file for this meeting before saving the new one.

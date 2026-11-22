@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="NoteIt" />
+  <meta id="theme-color-meta" name="theme-color" content="#2c5f4f" />
   <title>NoteIt — Meeting Notes</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -39,14 +47,29 @@
           <span class="brand-name">NoteIt</span>
         </div>
         <div class="header-actions">
+          <button id="settings-btn" class="btn btn-ghost btn-sm" type="button" title="Settings &amp; iOS Setup">Setup</button>
           <button id="theme-toggle-btn" class="btn btn-ghost btn-sm" type="button" title="Toggle theme">Theme</button>
           <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">Logout</button>
         </div>
       </div>
 
+      <div class="sidebar-actions">
+        <button id="record-btn" class="btn btn-primary flex-1" type="button">Record</button>
+        <button id="open-upload-btn" class="btn btn-secondary flex-1" type="button">Upload Audio</button>
+      </div>
+
+      <div id="offline-banner" class="offline-banner hidden">
+        Offline mode — viewing cached notes. Recordings save locally until online.
+      </div>
+
       <div class="search-box">
         <input id="search-input" type="search" placeholder="Search meetings, notes, transcripts..." />
       </div>
+
+      <section id="pending-uploads-section" class="pending-uploads hidden">
+        <div class="pending-uploads-title">Pending Local Uploads</div>
+        <div id="pending-uploads-list" class="pending-uploads-list"></div>
+      </section>
 
       <div id="meeting-list" class="meeting-list"></div>
     </aside>
@@ -54,11 +77,17 @@
     <main class="main-pane">
       <div id="empty-state" class="empty-state">
         <h2>Select a meeting</h2>
-        <p class="muted">Record on your iPhone using NoteIt or the Action Button; summaries, rough notes, transcripts, and AI Q&amp;A appear here.</p>
+        <p class="muted">
+          Tap <strong>Record</strong> to capture audio with rough notes in the foreground,
+          upload a recording, or send an Apple Voice Memo via Shortcuts.
+        </p>
       </div>
 
       <div id="detail-view" class="detail-view hidden">
         <header class="detail-header">
+          <div class="detail-nav-row">
+            <button id="back-btn" class="btn btn-ghost btn-sm mobile-back-btn" type="button">&larr; Meetings</button>
+          </div>
           <div class="title-block">
             <input id="meeting-title-input" class="title-input" type="text" aria-label="Meeting title" />
             <div class="meta-row">
@@ -68,6 +97,7 @@
           </div>
           <div class="toolbar">
             <button id="retry-btn" class="btn btn-secondary btn-sm hidden" type="button">Retry</button>
+            <button id="share-md-btn" class="btn btn-secondary btn-sm" type="button">Share .md</button>
             <button id="copy-md-btn" class="btn btn-secondary btn-sm" type="button">Copy Markdown</button>
             <button id="download-md-btn" class="btn btn-secondary btn-sm" type="button">Download .md</button>
             <button id="delete-btn" class="btn btn-danger btn-sm" type="button">Delete</button>
@@ -94,7 +124,7 @@
         <section id="tab-notes" class="tab-panel">
           <div class="panel-actions">
             <span class="muted">Anarlog-style rough notes — edit and re-summarize anytime.</span>
-            <div>
+            <div class="btn-group">
               <button id="save-notes-btn" class="btn btn-secondary btn-sm" type="button">Save Notes</button>
               <button id="save-resummarize-btn" class="btn btn-primary btn-sm" type="button">Save &amp; Re-summarize</button>
             </div>
@@ -103,6 +133,9 @@
         </section>
 
         <section id="tab-transcript" class="tab-panel">
+          <div class="panel-actions">
+            <input id="transcript-filter-input" class="inline-input" type="search" placeholder="Filter transcript..." />
+          </div>
           <div id="transcript-content" class="transcript-list"></div>
         </section>
 
@@ -121,7 +154,166 @@
     </main>
   </div>
 
+  <!-- Foreground Recorder Overlay -->
+  <div id="recorder-view" class="modal-backdrop recorder-backdrop hidden" role="dialog" aria-modal="true" aria-label="Record meeting">
+    <div class="recorder-card">
+      <header class="recorder-header">
+        <button id="rec-discard-btn" class="btn btn-ghost btn-sm" type="button">&times; Discard</button>
+        <div class="rec-status-pill">
+          <span id="rec-dot" class="rec-dot"></span>
+          <span id="rec-timer">00:00</span>
+        </div>
+        <button id="rec-done-btn" class="btn btn-primary btn-sm" type="button">Done</button>
+      </header>
+
+      <div class="rec-meter-wrap">
+        <progress id="rec-amp-meter" class="amp-meter" max="100" value="8"></progress>
+      </div>
+
+      <div id="rec-wake-hint" class="rec-hint">
+        <span>Keep NoteIt open while recording. For locked-screen recording, use Voice Memos + the NoteIt Shortcut.</span>
+        <span id="rec-wakelock-badge" class="wakelock-pill hidden">Screen Awake</span>
+      </div>
+
+      <div id="rec-interrupted-banner" class="rec-interrupted-banner hidden">
+        <p id="rec-interrupted-text">Recording was interrupted by iOS (screen lock or app switch). Your captured audio is safely saved.</p>
+        <div class="btn-group">
+          <button id="rec-upload-saved-btn" class="btn btn-primary btn-sm" type="button">Upload Saved Audio</button>
+          <button id="rec-discard-saved-btn" class="btn btn-danger btn-sm" type="button">Discard</button>
+        </div>
+      </div>
+
+      <div id="rec-error-banner" class="error-banner hidden"></div>
+
+      <input
+        id="rec-title-input"
+        class="rec-title-input"
+        type="text"
+        maxlength="200"
+        placeholder="Meeting title (optional — AI names it later)"
+        aria-label="Recording title"
+      />
+
+      <textarea
+        id="rec-notes-input"
+        class="rec-notes-input"
+        placeholder="Jot down rough thoughts, names, or key bullets...&#10;&#10;NoteIt merges these with the transcript into your enhanced summary."
+        aria-label="Rough meeting notes"
+      ></textarea>
+
+      <div id="rec-upload-progress-wrap" class="upload-progress-wrap hidden">
+        <progress id="rec-upload-progress" class="upload-progress" max="100" value="0"></progress>
+        <span id="rec-upload-progress-text" class="muted">Uploading... 0%</span>
+      </div>
+
+      <footer class="recorder-footer">
+        <button id="rec-pause-btn" class="btn btn-secondary" type="button">Pause</button>
+        <button id="rec-stop-btn" class="btn btn-primary flex-1" type="button">Stop &amp; Summarize</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Upload Audio Modal -->
+  <div id="upload-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="Upload audio">
+    <div class="modal-card">
+      <header class="modal-header">
+        <h2>Upload Audio</h2>
+        <button id="upload-close-btn" class="btn btn-ghost btn-sm" type="button">Close</button>
+      </header>
+      <form id="upload-form" class="modal-form">
+        <label id="upload-dropzone" class="upload-dropzone" for="upload-file-input">
+          <span id="upload-file-label">Tap to choose an audio file or drop it here (.m4a, .mp3, .wav, .webm, .caf)</span>
+          <input
+            id="upload-file-input"
+            class="sr-only"
+            type="file"
+            accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.webm,.flac,.mp4,.caf,.3gp,.opus"
+          />
+        </label>
+
+        <label for="upload-title-input">Title (optional)</label>
+        <input id="upload-title-input" type="text" maxlength="200" placeholder="Leave blank to let AI name it" />
+
+        <label for="upload-notes-input">Rough Notes (optional)</label>
+        <textarea id="upload-notes-input" rows="4" placeholder="Names, decisions, or bullets to guide the AI summary..."></textarea>
+
+        <label for="upload-stt-select">Speech-to-Text</label>
+        <select id="upload-stt-select">
+          <option value="auto">Auto (Groq + Gemini fallback)</option>
+          <option value="groq">Groq Whisper</option>
+          <option value="gemini">Gemini Flash</option>
+        </select>
+
+        <p id="upload-error" class="error-text hidden"></p>
+
+        <div id="upload-progress-wrap" class="upload-progress-wrap hidden">
+          <progress id="upload-progress" class="upload-progress" max="100" value="0"></progress>
+          <span id="upload-progress-text" class="muted">Uploading... 0%</span>
+        </div>
+
+        <div class="modal-actions">
+          <button id="upload-cancel-btn" class="btn btn-secondary" type="button">Cancel</button>
+          <button id="upload-submit-btn" class="btn btn-primary" type="submit">Upload &amp; Summarize</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Settings & iOS Setup Modal -->
+  <div id="settings-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="Settings and iOS Setup">
+    <div class="modal-card settings-card">
+      <header class="modal-header">
+        <h2>Settings &amp; iOS Setup</h2>
+        <button id="settings-close-btn" class="btn btn-ghost btn-sm" type="button">Close</button>
+      </header>
+      <div class="modal-body">
+        <section class="settings-section">
+          <label for="settings-stt-select">Default Speech-to-Text</label>
+          <select id="settings-stt-select">
+            <option value="auto">Auto (Groq + Gemini fallback)</option>
+            <option value="groq">Groq Whisper</option>
+            <option value="gemini">Gemini Flash</option>
+          </select>
+          <p class="muted">Auto uses Groq Whisper and falls back to Gemini Flash if rate-limited.</p>
+        </section>
+
+        <section class="settings-section">
+          <h3>Install as iOS App (PWA)</h3>
+          <p class="muted">
+            In Safari on your iPhone, tap <strong>Share</strong> &rarr; <strong>Add to Home Screen</strong>
+            to install NoteIt as a standalone app with offline reading and foreground recording.
+          </p>
+        </section>
+
+        <section class="settings-section">
+          <h3>Voice Memos + Action Button Shortcut</h3>
+          <p class="muted">
+            For locked-screen or hands-free meetings, map your iPhone Action Button to
+            <strong>Voice Memo</strong> and create a Share Sheet Shortcut posting to:
+          </p>
+          <div class="copy-url-row">
+            <input id="shortcut-endpoint-input" type="text" readonly aria-label="Quick upload endpoint URL" />
+            <button id="copy-endpoint-btn" class="btn btn-secondary btn-sm" type="button">Copy URL</button>
+          </div>
+          <ol class="setup-steps">
+            <li>Open Apple <strong>Shortcuts</strong> &rarr; <strong>+</strong> &rarr; enable <strong>Show in Share Sheet</strong> (Audio / Files).</li>
+            <li>Add action <strong>Get Contents of URL</strong> with the URL above and Method <strong>POST</strong>.</li>
+            <li>Add Header: <code>Authorization</code> = <code>Bearer &lt;AUTH_TOKEN&gt;</code>.</li>
+            <li>Set Request Body to <strong>Form</strong> with field <code>file</code> (type <strong>File</strong>) = <strong>Shortcut Input</strong> (optional <code>title</code> text field).</li>
+            <li>After recording in Voice Memos, tap <strong>Share</strong> &rarr; your Shortcut to transcribe and summarize.</li>
+          </ol>
+        </section>
+
+        <section class="settings-section">
+          <button id="clear-cache-btn" class="btn btn-danger btn-sm" type="button">Clear Local Offline Cache</button>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
+  <script src="/static/db.js"></script>
+  <script src="/static/recorder.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

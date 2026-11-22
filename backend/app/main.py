@@ -25,8 +25,11 @@ CSP_POLICY = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self'; "
-    "img-src 'self' data:; "
+    "img-src 'self' data: blob:; "
+    "media-src 'self' blob:; "
     "connect-src 'self'; "
+    "worker-src 'self'; "
+    "manifest-src 'self'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
@@ -94,6 +97,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         @app.get("/", include_in_schema=False)
         async def serve_web_index() -> FileResponse:
             return FileResponse(WEB_DIR / "index.html")
+
+        @app.get("/manifest.webmanifest", include_in_schema=False)
+        async def serve_web_manifest() -> FileResponse:
+            return FileResponse(
+                WEB_DIR / "manifest.webmanifest",
+                media_type="application/manifest+json",
+            )
+
+        @app.get("/sw.js", include_in_schema=False)
+        async def serve_service_worker() -> FileResponse:
+            return FileResponse(
+                WEB_DIR / "sw.js",
+                media_type="application/javascript",
+                headers={"Cache-Control": "no-cache"},
+            )
+
+        @app.get("/apple-touch-icon.png", include_in_schema=False)
+        async def serve_apple_touch_icon() -> FileResponse:
+            return FileResponse(
+                WEB_DIR / "icons" / "apple-touch-icon.png",
+                media_type="image/png",
+            )
 
     return app
 

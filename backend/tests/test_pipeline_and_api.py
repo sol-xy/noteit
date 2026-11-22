@@ -190,3 +190,140 @@ async def test_auto_fallback_to_gemini_resummarize_and_chat(
     chat_clear = await client.delete(f"/api/meetings/{meeting_id}/chat", headers=auth_headers)
     assert chat_clear.status_code == 200
     assert (await client.get(f"/api/meetings/{meeting_id}/chat", headers=auth_headers)).json() == []
+
+
+async def test_quick_upload_one_step_pipeline(
+    app_instance, client, auth_headers, tmp_path: Path, monkeypatch
+):
+    def fake_groq(chunk_path, settings):
+        return (
+            [
+                TranscriptSegment(0.0, 1.2, "We agreed to launch on Friday."),
+                TranscriptSegment(1.2, 2.0, "Alex will prepare release notes."),
+            ],
+            "We agreed to launch on Friday. Alex will prepare release notes.",
+            "en",
+        )
+
+    def fake_summary(transcript, manual_notes, custom_instructions, settings):
+        assert "Friday" in transcript
+        assert "check deploy" in manual_notes
+        return SummaryResult(
+            title="Friday Launch Planning",
+            summary_markdown=(
+                "## Overview\n\nTeam aligned on launching Friday.\n\n"
+                "## Action Items\n\n- [ ] Alex: Prepare release notes\n"
+            ),
+        )
+
+    monkeypatch.setattr("app.services.stt._transcribe_chunk_groq_sync", fake_groq)
+    monkeypatch.setattr("app.services.summarizer._generate_summary_sync", fake_summary)
+
+    audio_file = make_sine_m4a(tmp_path / "quick.m4a", duration_sec=2.0)
+    with audio_file.open("rb") as f:
+        up = await client.post(
+            "/api/meetings/quick-upload",
+            headers=auth_headers,
+            data={"title": "", "manual_notes": "- check deploy", "stt_provider": "auto"},
+            files={"file": ("quick.m4a", f, "audio/m4a")},
+        )
+    assert up.status_code == 202
+    meeting_id = up.json()["id"]
+    assert up.json()["status"] == "queued"
+
+    await app_instance.state.worker.drain_for_tests()
+
+    detail_resp = await client.get(f"/api/meetings/{meeting_id}", headers=auth_headers)
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["status"] == "completed"
+    assert detail["title"] == "Friday Launch Planning"
+    assert detail["stt_used"] == "groq"
+    assert detail["has_audio"] is False
+    assert len(detail["segments"]) == 2
+    assert "## Action Items" in detail["summary"]
+
+    audio_dir = app_instance.dependency_overrides[
+        next(iter(app_instance.dependency_overrides))
+    ]().audio_dir
+    assert list(audio_dir.glob("*")) == []
+
+
+async def test_quick_upload_custom_title_and_idempotent_client_id(
+    app_instance, client, auth_headers, tmp_path: Path, monkeypatch
+):
+    def fake_groq(chunk_path, settings):
+        return (
+            [TranscriptSegment(0.0, 2.0, "Discussed database sharding.")],
+            "Discussed database sharding.",
+            "en",
+        )
+
+    def fake_summary(transcript, manual_notes, custom_instructions, settings):
+        return SummaryResult(
+            title="AI Suggested Title",
+            summary_markdown="## Overview\n\nDatabase sharding overview.",
+        )
+
+    monkeypatch.setattr("app.services.stt._transcribe_chunk_groq_sync", fake_groq)
+    monkeypatch.setattr("app.services.summarizer._generate_summary_sync", fake_summary)
+
+    audio_file = make_sine_m4a(tmp_path / "arch.m4a", duration_sec=2.0)
+    with audio_file.open("rb") as f:
+        r1 = await client.post(
+            "/api/meetings/quick-upload",
+            headers=auth_headers,
+            data={"title": "Architecture Review", "client_id": "shortcut-uuid-1"},
+            files={"file": ("arch.m4a", f, "audio/m4a")},
+        )
+    assert r1.status_code == 202
+    m1 = r1.json()
+    await app_instance.state.worker.drain_for_tests()
+
+    detail = (await client.get(f"/api/meetings/{m1['id']}", headers=auth_headers)).json()
+    assert detail["title"] == "Architecture Review"
+    assert detail["status"] == "completed"
+
+    with audio_file.open("rb") as f:
+        r2 = await client.post(
+            "/api/meetings/quick-upload",
+            headers=auth_headers,
+            data={"title": "Architecture Review", "client_id": "shortcut-uuid-1"},
+            files={"file": ("arch.m4a", f, "audio/m4a")},
+        )
+    assert r2.status_code == 202
+    assert r2.json()["id"] == m1["id"]
+    await app_instance.state.worker.drain_for_tests()
+
+    listing = await client.get("/api/meetings", headers=auth_headers)
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 1
+
+
+async def test_quick_upload_invalid_audio_leaves_no_orphan(app_instance, client, auth_headers):
+    resp = await client.post(
+        "/api/meetings/quick-upload",
+        headers=auth_headers,
+        data={"title": "Corrupt Upload"},
+        files={"file": ("bad.m4a", b"not-valid-audio-data", "audio/m4a")},
+    )
+    assert resp.status_code == 400
+
+    listing = await client.get("/api/meetings", headers=auth_headers)
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 0
+
+    audio_dir = app_instance.dependency_overrides[
+        next(iter(app_instance.dependency_overrides))
+    ]().audio_dir
+    assert list(audio_dir.iterdir()) == []
+
+
+async def test_quick_upload_requires_auth(client, tmp_path: Path):
+    audio_file = make_sine_m4a(tmp_path / "unauth.m4a", duration_sec=1.0)
+    with audio_file.open("rb") as f:
+        resp = await client.post(
+            "/api/meetings/quick-upload",
+            files={"file": ("unauth.m4a", f, "audio/m4a")},
+        )
+    assert resp.status_code == 401

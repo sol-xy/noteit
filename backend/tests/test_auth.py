@@ -23,7 +23,39 @@ async def test_health_and_web_ui_headers(client):
     index = await client.get("/")
     assert index.status_code == 200
     assert "NoteIt" in index.text
-    assert "content-security-policy" in index.headers
+    csp = index.headers["content-security-policy"]
+    assert "worker-src 'self'" in csp
+    assert "media-src 'self' blob:" in csp
+
+
+async def test_pwa_manifest_service_worker_and_icons(client):
+    manifest_resp = await client.get("/manifest.webmanifest")
+    assert manifest_resp.status_code == 200
+    assert "application/manifest+json" in manifest_resp.headers["content-type"]
+    manifest = manifest_resp.json()
+    assert manifest["display"] == "standalone"
+    assert manifest["start_url"] == "/"
+    assert len(manifest["icons"]) >= 3
+
+    sw_resp = await client.get("/sw.js")
+    assert sw_resp.status_code == 200
+    assert "javascript" in sw_resp.headers["content-type"]
+    assert "no-cache" in sw_resp.headers.get("cache-control", "").lower()
+
+    for icon_path in [
+        "/apple-touch-icon.png",
+        "/static/icons/apple-touch-icon.png",
+        "/static/icons/icon-192.png",
+        "/static/icons/icon-512.png",
+        "/static/icons/icon-maskable-512.png",
+    ]:
+        icon_resp = await client.get(icon_path)
+        assert icon_resp.status_code == 200
+        assert icon_resp.content.startswith(b"\x89PNG")
+
+    for js_path in ["/static/db.js", "/static/recorder.js", "/static/app.js"]:
+        js_resp = await client.get(js_path)
+        assert js_resp.status_code == 200
 
 
 async def test_bearer_and_cookie_auth_flow(client, test_token, auth_headers):

@@ -17,7 +17,7 @@ An **Anarlog-inspired, privacy-conscious iOS meeting notetaker** built with Flut
   - **Groq Whisper (`whisper-large-v3-turbo`)** transcribes quickly with automatic fallback to **Gemini Flash**.
   - Raw audio files are automatically deleted from both iPhone and server once processed (`DELETE_AUDIO_AFTER_TRANSCRIPTION=true`).
   - **Gemini Flash** produces structured Markdown summaries (`Overview`, `Key Points`, `Decisions`, `Action Items`, `Open Questions`) and powers grounded per-meeting **Ask AI** chat.
-- **Markdown export & Desktop Web UI:** Share `.md` files via the iOS Share Sheet (Obsidian, Apple Notes, Notion) or browse/edit/chat/export from your Windows PC via the auth-gated Web UI.
+- **Markdown export & PWA / Desktop Web UI:** Install NoteIt as a mobile-first iOS PWA (offline read cache, foreground recording with rough notes, audio file upload, Share Sheet `.md` export), pair with **Apple Voice Memos + Action Button Shortcut** for locked-screen recording with zero sideloading, or browse/edit/chat/export from your desktop browser.
 
 ---
 
@@ -68,7 +68,39 @@ An **Anarlog-inspired, privacy-conscious iOS meeting notetaker** built with Flut
 
 ---
 
-## 2. Building the iOS App on GitHub Actions & Sideloading (No Mac Required)
+## 2. iOS PWA + Voice Memos Shortcut Setup (Recommended — No Sideloading Required)
+
+Running NoteIt as a Progressive Web App paired with Apple's built-in **Voice Memos** and **Shortcuts** avoids the 7-day free Apple ID sideloading/SideStore refresh cycle while still giving you instant Action Button recording with the screen locked.
+
+### A. Install the NoteIt PWA on iPhone
+1. Open `https://<your-domain>` in **Safari** on your iPhone and unlock with your `AUTH_TOKEN`.
+2. Tap **Share** (the square-with-arrow icon) → **Add to Home Screen** → **Add**.
+3. Open **NoteIt** from your Home Screen:
+   - **Foreground recording + rough notes:** Tap **Record** inside NoteIt whenever you can keep the app open on screen (uses Screen Wake Lock on iOS 18.4+ and stores audio chunks locally in IndexedDB if interrupted or offline).
+   - **Upload audio:** Tap **Upload Audio** to send any `.m4a`, `.mp3`, `.wav`, `.webm`, or `.caf` file.
+   - **Export:** Tap **Share .md** in any meeting to send Markdown directly to Obsidian, Apple Notes, or Notion.
+
+### B. Locked-Screen Action Button Recording (Voice Memos + "Send to NoteIt" Shortcut)
+Use this whenever you want one-press recording with your iPhone screen locked:
+
+1. **Map your Action Button to Voice Memos:**
+   - Open iPhone **Settings → Action Button → Shortcut** (or **Voice Memo** / **Controls → Voice Memo**) so a single press starts/stops recording even while locked.
+2. **Create the "Send to NoteIt" Share Sheet Shortcut:**
+   - Open the Apple **Shortcuts** app and tap **+** to create a new shortcut (name it **Send to NoteIt**).
+   - Tap the **(i)** / details icon at the bottom and enable **Show in Share Sheet** (set accepted types to **Audio** and **Files**).
+   - Add action **Get Contents of URL**:
+     - **URL:** `https://<your-domain>/api/meetings/quick-upload` (also copyable inside NoteIt PWA under **Setup**)
+     - **Method:** `POST`
+     - **Headers:** `Authorization` = `Bearer <AUTH_TOKEN>`
+     - **Request Body:** `Form`
+       - Add field `file` (**Type:** `File`) → set value to **Shortcut Input**
+       - *(Optional)* Add field `title` (**Type:** `Text`) → e.g. **Ask Each Time** (leave blank to let AI auto-title)
+   - *(Optional)* Add a **Show Notification** action (`"Sent to NoteIt for transcription"`) after **Get Contents of URL**.
+3. **Workflow:** Press the Action Button to record in **Voice Memos** (screen locked, full background audio), then tap **Share → Send to NoteIt** when finished. Your summary, transcript, and Ask AI chat appear in the NoteIt PWA moments later.
+
+---
+
+## 3. Native iOS App via GitHub Actions & Sideloading (Optional)
 
 1. Push this repository to a **public GitHub repository** (GitHub Actions macOS runners are free for public repos).
 2. Open the **Actions** tab → **Build Unsigned iOS IPA** (runs automatically on pushes to `main` touching `app/`, or trigger manually via **Run workflow**).
@@ -84,7 +116,7 @@ An **Anarlog-inspired, privacy-conscious iOS meeting notetaker** built with Flut
 
 ---
 
-## 3. Setting Up the iPhone App & Action Button
+## 4. Setting Up the Native iPhone App & Action Button
 
 1. Open **NoteIt** on your iPhone and tap **Settings**:
    - **Server URL:** `https://<your-domain>` (e.g., `https://noteit.example.com`)
@@ -98,7 +130,7 @@ An **Anarlog-inspired, privacy-conscious iOS meeting notetaker** built with Flut
 
 ---
 
-## 4. Local Windows Development (Optional)
+## 5. Local Windows Development (Optional)
 
 Once Flutter is installed on your Windows machine:
 ```powershell
