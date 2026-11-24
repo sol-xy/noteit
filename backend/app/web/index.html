@@ -64,6 +64,9 @@
 
       <div class="search-box">
         <input id="search-input" type="search" placeholder="Search meetings, notes, transcripts..." />
+        <button id="refresh-btn" class="btn btn-secondary btn-sm refresh-btn" type="button" title="Refresh meetings" aria-label="Refresh meetings">
+          <span class="refresh-glyph" aria-hidden="true">&#8635;</span>
+        </button>
       </div>
 
       <section id="pending-uploads-section" class="pending-uploads hidden">
@@ -275,6 +278,15 @@
             <option value="gemini">Gemini Flash</option>
           </select>
           <p class="muted">Auto uses Groq Whisper and falls back to Gemini Flash if rate-limited.</p>
+        </section>
+
+        <section class="settings-section">
+          <h3>Push Notifications</h3>
+          <p id="push-status-text" class="muted">Checking notification support...</p>
+          <div class="btn-group">
+            <button id="push-toggle-btn" class="btn btn-primary btn-sm" type="button" disabled>Enable Notifications</button>
+            <button id="push-test-btn" class="btn btn-secondary btn-sm hidden" type="button">Send Test</button>
+          </div>
         </section>
 
         <section class="settings-section">

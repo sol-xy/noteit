@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 MeetingStatus = Literal[
     "created",
@@ -94,3 +94,42 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     user_message: ChatMessageOut
     assistant_message: ChatMessageOut
+
+
+class PushKeysIn(BaseModel):
+    p256dh: str = Field(..., min_length=16, max_length=512)
+    auth: str = Field(..., min_length=8, max_length=256)
+
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(..., min_length=10, max_length=2048)
+    keys: PushKeysIn
+
+    @field_validator("endpoint")
+    @classmethod
+    def _validate_https_endpoint(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.startswith("https://"):
+            raise ValueError("Push endpoint must use HTTPS")
+        return normalized
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str = Field(..., min_length=10, max_length=2048)
+
+
+class PushConfigResponse(BaseModel):
+    enabled: bool
+    public_key: str | None
+    subscription_count: int
+
+
+class PushStatusResponse(BaseModel):
+    subscribed: bool
+    subscription_count: int
+
+
+class PushTestResponse(BaseModel):
+    sent: int
+    failed: int
+    removed: int

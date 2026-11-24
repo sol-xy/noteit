@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "noteit-shell-v2";
+const CACHE_NAME = "noteit-shell-v3";
 const PRECACHE_URLS = [
   "/",
   "/manifest.webmanifest",
@@ -85,4 +85,101 @@ self.addEventListener("fetch", (event) => {
         .catch(() => caches.match(req).then((cached) => cached || Response.error()))
     );
   }
+});
+
+function parsePushPayload(event) {
+  const fallback = {
+    title: "NoteIt",
+    body: "Meeting update available.",
+    url: "/",
+    tag: "noteit",
+    meeting_id: null,
+  };
+  if (!event.data) return fallback;
+  try {
+    const data = event.data.json();
+    if (data && typeof data === "object") {
+      return {
+        title: typeof data.title === "string" && data.title ? data.title : fallback.title,
+        body: typeof data.body === "string" ? data.body : fallback.body,
+        url: typeof data.url === "string" && data.url ? data.url : fallback.url,
+        tag: typeof data.tag === "string" && data.tag ? data.tag : fallback.tag,
+        meeting_id: typeof data.meeting_id === "string" ? data.meeting_id : null,
+      };
+    }
+  } catch (_) {
+    try {
+      const text = event.data.text();
+      if (text) {
+        return { ...fallback, body: text };
+      }
+    } catch (_) {
+      // Fall back to defaults.
+    }
+  }
+  return fallback;
+}
+
+self.addEventListener("push", (event) => {
+  const payload = parsePushPayload(event);
+  const work = self.registration
+    .showNotification(payload.title, {
+      body: payload.body,
+      icon: "/static/icons/icon-192.png",
+      badge: "/static/icons/icon-192.png",
+      tag: payload.tag,
+      renotify: true,
+      data: {
+        url: payload.url,
+        meeting_id: payload.meeting_id,
+      },
+    })
+    .then(() =>
+      self.clients.matchAll({ type: "window", includeUncontrolled: true })
+    )
+    .then((clientList) => {
+      for (const client of clientList) {
+        if (client.url && client.url.startsWith(self.location.origin)) {
+          client.postMessage({
+            type: "noteit-push",
+            meeting_id: payload.meeting_id,
+            url: payload.url,
+          });
+        }
+      }
+    });
+
+  event.waitUntil(work);
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data = (event.notification && event.notification.data) || {};
+  const targetPath = typeof data.url === "string" && data.url ? data.url : "/";
+  const fullTargetUrl = new URL(targetPath, self.location.origin).href;
+  const meetingId = typeof data.meeting_id === "string" ? data.meeting_id : null;
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          if (client.url && client.url.startsWith(self.location.origin)) {
+            client.postMessage({
+              type: "noteit-open-meeting",
+              meeting_id: meetingId,
+              url: targetPath,
+            });
+            if (typeof client.focus === "function") {
+              return client.focus();
+            }
+            return client;
+          }
+        }
+        if (typeof self.clients.openWindow === "function") {
+          return self.clients.openWindow(fullTargetUrl);
+        }
+        return null;
+      })
+  );
 });

@@ -43,12 +43,24 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data")
     log_level: str = "INFO"
 
+    push_enabled: bool = True
+    vapid_subject: str = "mailto:noteit@example.com"
+    vapid_private_key: str = ""
+
     @field_validator("default_stt_provider")
     @classmethod
     def _validate_stt_provider(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in {"auto", "groq", "gemini"}:
             raise ValueError("DEFAULT_STT_PROVIDER must be one of: auto, groq, gemini")
+        return normalized
+
+    @field_validator("vapid_subject")
+    @classmethod
+    def _validate_vapid_subject(cls, value: str) -> str:
+        normalized = value.strip()
+        if not (normalized.startswith("mailto:") or normalized.startswith("https://")):
+            raise ValueError("VAPID_SUBJECT must start with 'mailto:' or 'https://'")
         return normalized
 
     @model_validator(mode="after")
@@ -81,6 +93,10 @@ class Settings(BaseSettings):
     @property
     def tmp_dir(self) -> Path:
         return self.data_dir / "tmp"
+
+    @property
+    def vapid_key_path(self) -> Path:
+        return self.data_dir / "vapid_private.pem"
 
     @property
     def derived_session_secret(self) -> bytes:

@@ -44,6 +44,7 @@ An **Anarlog-inspired, privacy-conscious iOS meeting notetaker** built with Flut
    - `AUTH_TOKEN=<generated-64-char-hex-token>`
    - `GROQ_API_KEY=...`
    - `GEMINI_API_KEY=...`
+   - `VAPID_SUBJECT=mailto:you@example.com` *(optional, for iOS PWA Web Push notifications; VAPID keys are auto-generated in `/data/vapid_private.pem`)*
    - Keep `COOKIE_SECURE=true` once HTTPS is enabled.
 
 3. **Start the Docker container (bound strictly to `127.0.0.1:8080`):**
@@ -76,6 +77,8 @@ Running NoteIt as a Progressive Web App paired with Apple's built-in **Voice Mem
 1. Open `https://<your-domain>` in **Safari** on your iPhone and unlock with your `AUTH_TOKEN`.
 2. Tap **Share** (the square-with-arrow icon) → **Add to Home Screen** → **Add**.
 3. Open **NoteIt** from your Home Screen:
+   - **Enable lock-screen notifications:** Tap **Setup → Push Notifications → Enable Notifications** (only available when launched from the Home Screen icon over HTTPS; use **Send Test** to verify). NoteIt will notify you as soon as transcription and summarization finish or fail.
+   - **Live updates & manual refresh:** The meeting list automatically polls while any meeting is `queued`, `transcribing`, or `summarizing`, refreshes automatically when returning from Voice Memos, and includes a manual **Refresh (↻)** button next to search.
    - **Foreground recording + rough notes:** Tap **Record** inside NoteIt whenever you can keep the app open on screen (uses Screen Wake Lock on iOS 18.4+ and stores audio chunks locally in IndexedDB if interrupted or offline).
    - **Upload audio:** Tap **Upload Audio** to send any `.m4a`, `.mp3`, `.wav`, `.webm`, or `.caf` file.
    - **Export:** Tap **Share .md** in any meeting to send Markdown directly to Obsidian, Apple Notes, or Notion.

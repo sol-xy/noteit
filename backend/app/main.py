@@ -16,7 +16,8 @@ from slowapi.errors import RateLimitExceeded
 from app.config import Settings, get_settings
 from app.db import Database
 from app.deps import limiter
-from app.routes import auth, chat, health, meetings
+from app.routes import auth, chat, health, meetings, push
+from app.services.push import PushService
 from app.services.worker import MeetingWorker
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -55,8 +56,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db = Database(cfg.db_path)
         await db.init()
 
-        worker = MeetingWorker(db=db, settings=cfg)
+        push_service = PushService(db=db, settings=cfg)
+        push_service.ensure_keys()
+
+        worker = MeetingWorker(db=db, settings=cfg, push_service=push_service)
         app.state.db = db
+        app.state.push = push_service
         app.state.worker = worker
         await worker.start()
         try:
@@ -90,6 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(meetings.router)
     app.include_router(chat.router)
+    app.include_router(push.router)
 
     if WEB_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")

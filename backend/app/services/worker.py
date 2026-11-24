@@ -8,11 +8,15 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.config import Settings
 from app.db import Database
 from app.services.stt import transcribe_audio
 from app.services.summarizer import generate_enhanced_notes
+
+if TYPE_CHECKING:
+    from app.services.push import PushService
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +45,15 @@ def _delete_file_quietly(path_str: str | None) -> None:
 class MeetingWorker:
     """Single-process async queue executing STT -> cleanup -> summarization."""
 
-    def __init__(self, db: Database, settings: Settings) -> None:
+    def __init__(
+        self,
+        db: Database,
+        settings: Settings,
+        push_service: PushService | None = None,
+    ) -> None:
         self.db = db
         self.settings = settings
+        self.push_service = push_service
         self._queue: asyncio.Queue[WorkerJob] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
 
@@ -138,10 +148,16 @@ class MeetingWorker:
 
         audio_path_str = meeting.get("audio_path")
         if not audio_path_str or not Path(audio_path_str).exists():
+            error_msg = "Audio file not found for transcription."
             await self.db.update_meeting_fields(
                 meeting_id,
                 status="failed",
-                error_message="Audio file not found for transcription.",
+                error_message=error_msg,
+            )
+            await self._notify_failed(
+                meeting_id,
+                meeting.get("title") or "Untitled Meeting",
+                error_msg,
             )
             return
 
@@ -177,10 +193,16 @@ class MeetingWorker:
             await self._process_summarization_only(meeting_id, custom_instructions=None)
         except Exception as exc:
             logger.warning("Transcription failed for %s: %s", meeting_id, exc)
+            error_msg = _sanitize_error(exc)
             await self.db.update_meeting_fields(
                 meeting_id,
                 status="failed",
-                error_message=_sanitize_error(exc),
+                error_message=error_msg,
+            )
+            await self._notify_failed(
+                meeting_id,
+                meeting.get("title") or "Untitled Meeting",
+                error_msg,
             )
         finally:
             shutil.rmtree(job_tmp_dir, ignore_errors=True)
@@ -216,10 +238,35 @@ class MeetingWorker:
                 status="completed",
                 error_message=None,
             )
+            await self._notify_completed(meeting_id, new_title)
         except Exception as exc:
             logger.warning("Summarization failed for %s: %s", meeting_id, exc)
+            error_msg = _sanitize_error(exc)
             await self.db.update_meeting_fields(
                 meeting_id,
                 status="failed",
-                error_message=_sanitize_error(exc),
+                error_message=error_msg,
             )
+            await self._notify_failed(
+                meeting_id,
+                meeting.get("title") or "Untitled Meeting",
+                error_msg,
+            )
+
+    async def _notify_completed(self, meeting_id: str, title: str) -> None:
+        if self.push_service is None:
+            return
+        try:
+            await self.push_service.notify_meeting_completed(meeting_id, title)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("Push completion notification failed for %s: %s", meeting_id, exc)
+
+    async def _notify_failed(
+        self, meeting_id: str, title: str, error_message: str
+    ) -> None:
+        if self.push_service is None:
+            return
+        try:
+            await self.push_service.notify_meeting_failed(meeting_id, title, error_message)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.warning("Push failure notification failed for %s: %s", meeting_id, exc)

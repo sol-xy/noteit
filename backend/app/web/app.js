@@ -3,6 +3,7 @@
 const DEFAULT_STT_KEY = "noteit_stt_provider";
 const THEME_STORAGE_KEY = "noteit_theme";
 const LOGGED_IN_HINT_KEY = "noteit_logged_in";
+const ACTIVE_MEETING_STATUSES = new Set(["queued", "transcribing", "summarizing"]);
 
 const state = {
   authenticated: false,
@@ -14,6 +15,12 @@ const state = {
   activeTab: "summary",
   transcriptFilter: "",
   pollTimer: null,
+  listPollTimer: null,
+  refreshingWorkspace: false,
+  lastResumeRefreshAt: 0,
+  pushConfig: null,
+  pushSubscribed: false,
+  pushBusy: false,
   activeRecording: null, // { id, mimeType, extension, filename, durationSeconds, autosaveTimer, interrupted }
   uploadingPendingIds: new Set(),
 };
@@ -32,6 +39,7 @@ const els = {
   openUploadBtn: document.getElementById("open-upload-btn"),
   offlineBanner: document.getElementById("offline-banner"),
   searchInput: document.getElementById("search-input"),
+  refreshBtn: document.getElementById("refresh-btn"),
   pendingUploadsSection: document.getElementById("pending-uploads-section"),
   pendingUploadsList: document.getElementById("pending-uploads-list"),
   meetingList: document.getElementById("meeting-list"),
@@ -102,6 +110,9 @@ const els = {
   settingsModal: document.getElementById("settings-modal"),
   settingsCloseBtn: document.getElementById("settings-close-btn"),
   settingsSttSelect: document.getElementById("settings-stt-select"),
+  pushStatusText: document.getElementById("push-status-text"),
+  pushToggleBtn: document.getElementById("push-toggle-btn"),
+  pushTestBtn: document.getElementById("push-test-btn"),
   shortcutEndpointInput: document.getElementById("shortcut-endpoint-input"),
   copyEndpointBtn: document.getElementById("copy-endpoint-btn"),
   clearCacheBtn: document.getElementById("clear-cache-btn"),
@@ -444,6 +455,7 @@ function toggleTheme() {
 
 function showLogin() {
   stopPolling();
+  stopListPolling();
   els.recorderView.classList.add("hidden");
   els.uploadModal.classList.add("hidden");
   els.settingsModal.classList.add("hidden");
@@ -463,19 +475,70 @@ function stopPolling() {
   }
 }
 
+function stopListPolling() {
+  if (state.listPollTimer) {
+    clearInterval(state.listPollTimer);
+    state.listPollTimer = null;
+  }
+}
+
+function syncListPolling() {
+  stopListPolling();
+  if (!state.authenticated || state.offline || document.visibilityState === "hidden") {
+    return;
+  }
+  const hasActive = state.meetings.some((m) => ACTIVE_MEETING_STATUSES.has(m.status));
+  if (!hasActive) return;
+
+  state.listPollTimer = setInterval(async () => {
+    if (!state.authenticated || state.offline || document.visibilityState === "hidden") {
+      stopListPolling();
+      return;
+    }
+    try {
+      await loadMeetings(els.searchInput.value, { silent: true });
+    } catch {
+      // Errors handled inside loadMeetings.
+    }
+  }, 3500);
+}
+
 function startPollingIfActive(meeting) {
   stopPolling();
-  if (!meeting || state.offline) return;
-  if (["queued", "transcribing", "summarizing"].includes(meeting.status)) {
+  if (!meeting || state.offline || document.visibilityState === "hidden") return;
+  if (ACTIVE_MEETING_STATUSES.has(meeting.status)) {
     state.pollTimer = setInterval(async () => {
-      if (!state.selectedId || state.offline) return;
+      if (!state.selectedId || state.offline || document.visibilityState === "hidden") {
+        stopPolling();
+        return;
+      }
       try {
-        await loadMeetingDetail(state.selectedId, { silent: true });
-        await loadMeetings(els.searchInput.value);
+        await loadMeetingDetail(state.selectedId, { silent: true, pushHistory: false });
       } catch {
         // Polling failure handled inside helpers.
       }
     }, 3000);
+  }
+}
+
+async function refreshWorkspace({ manual = false } = {}) {
+  if (!state.authenticated || state.refreshingWorkspace) return;
+  state.refreshingWorkspace = true;
+  els.refreshBtn.disabled = true;
+  els.refreshBtn.classList.add("is-refreshing");
+
+  try {
+    await loadMeetings(els.searchInput.value, { silent: !manual });
+    if (state.selectedId) {
+      await loadMeetingDetail(state.selectedId, { silent: true, pushHistory: false });
+    }
+    if (manual) {
+      showToast(state.offline ? "You are offline" : "Meetings updated");
+    }
+  } finally {
+    state.refreshingWorkspace = false;
+    els.refreshBtn.disabled = false;
+    els.refreshBtn.classList.remove("is-refreshing");
   }
 }
 
@@ -496,6 +559,9 @@ async function enterAuthenticatedWorkspace() {
   if (initialMeetingId) {
     await loadMeetingDetail(initialMeetingId, { pushHistory: false });
   }
+
+  // Warm push config and sync existing browser subscription silently.
+  refreshPushUi({ syncExisting: true }).catch(() => {});
 }
 
 async function checkSession() {
@@ -528,9 +594,9 @@ async function checkSession() {
   showLogin();
 }
 
-async function loadMeetings(query = "") {
+async function loadMeetings(query = "", opts = {}) {
   const cached = await window.NoteItDB.listMeetings(query);
-  if (cached.length > 0 && state.meetings.length === 0) {
+  if (!opts.silent && cached.length > 0 && state.meetings.length === 0) {
     state.meetings = cached;
     renderMeetingList();
   }
@@ -542,10 +608,12 @@ async function loadMeetings(query = "") {
     state.meetings = data.meetings || [];
     await window.NoteItDB.upsertMeetings(state.meetings);
     renderMeetingList();
+    syncListPolling();
   } catch (err) {
     if (err.status === 401) return;
     state.meetings = await window.NoteItDB.listMeetings(query);
     renderMeetingList();
+    stopListPolling();
   }
 }
 
@@ -753,6 +821,11 @@ async function loadMeetingDetail(meetingId, opts = {}) {
     }
   }
 
+  const prevStatus =
+    state.selectedMeeting && state.selectedMeeting.id === meetingId
+      ? state.selectedMeeting.status
+      : null;
+
   try {
     const resp = await apiFetch(`/api/meetings/${encodeURIComponent(meetingId)}`);
     const meeting = await resp.json();
@@ -760,6 +833,13 @@ async function loadMeetingDetail(meetingId, opts = {}) {
     await window.NoteItDB.upsertMeetingDetail(meeting);
     renderMeetingDetail(meeting);
     startPollingIfActive(meeting);
+    if (
+      prevStatus &&
+      ACTIVE_MEETING_STATUSES.has(prevStatus) &&
+      !ACTIVE_MEETING_STATUSES.has(meeting.status)
+    ) {
+      loadMeetings(els.searchInput.value, { silent: true }).catch(() => {});
+    }
     if (!opts.silent) {
       await loadChat(meetingId);
     }
@@ -1195,11 +1275,255 @@ function setSelectedUploadFile(file) {
   }
 }
 
+// Push Notification helpers
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+function isIosDevice() {
+  const ua = navigator.userAgent || "";
+  return (
+    /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function isStandalonePwa() {
+  return Boolean(
+    (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+      window.navigator.standalone === true
+  );
+}
+
+async function getSwRegistration() {
+  if (!("serviceWorker" in navigator)) return null;
+  const existing = await navigator.serviceWorker.getRegistration("/");
+  if (existing) return existing;
+  return await navigator.serviceWorker.ready;
+}
+
+function setPushToggleButton(label, isSecondary) {
+  els.pushToggleBtn.textContent = label;
+  els.pushToggleBtn.classList.toggle("btn-primary", !isSecondary);
+  els.pushToggleBtn.classList.toggle("btn-secondary", Boolean(isSecondary));
+}
+
+async function refreshPushUi({ syncExisting = false } = {}) {
+  if (!els.pushStatusText || !els.pushToggleBtn || !els.pushTestBtn) return;
+
+  if (
+    !("serviceWorker" in navigator) ||
+    !("PushManager" in window) ||
+    !("Notification" in window)
+  ) {
+    if (isIosDevice() && !isStandalonePwa()) {
+      els.pushStatusText.textContent =
+        "Install NoteIt to your Home Screen (Safari → Share → Add to Home Screen) to enable iOS push notifications.";
+    } else {
+      els.pushStatusText.textContent =
+        "Push notifications are not supported in this browser.";
+    }
+    setPushToggleButton("Enable Notifications", false);
+    els.pushToggleBtn.disabled = true;
+    els.pushTestBtn.classList.add("hidden");
+    return;
+  }
+
+  if (isIosDevice() && !isStandalonePwa()) {
+    els.pushStatusText.textContent =
+      "Install NoteIt to your Home Screen (Safari → Share → Add to Home Screen) to enable iOS push notifications.";
+    setPushToggleButton("Enable Notifications", false);
+    els.pushToggleBtn.disabled = true;
+    els.pushTestBtn.classList.add("hidden");
+    return;
+  }
+
+  try {
+    const resp = await apiFetch("/api/push/config");
+    state.pushConfig = await resp.json();
+  } catch (err) {
+    if (err.status === 401) return;
+    els.pushStatusText.textContent = "Connect to your server to manage push notifications.";
+    els.pushToggleBtn.disabled = true;
+    els.pushTestBtn.classList.add("hidden");
+    return;
+  }
+
+  if (!state.pushConfig || !state.pushConfig.enabled || !state.pushConfig.public_key) {
+    els.pushStatusText.textContent = "Push notifications are disabled on the server.";
+    setPushToggleButton("Enable Notifications", false);
+    els.pushToggleBtn.disabled = true;
+    els.pushTestBtn.classList.add("hidden");
+    return;
+  }
+
+  if (Notification.permission === "denied") {
+    state.pushSubscribed = false;
+    els.pushStatusText.textContent =
+      "Notifications are blocked. Enable notifications for NoteIt in iOS / browser Settings.";
+    setPushToggleButton("Enable Notifications", false);
+    els.pushToggleBtn.disabled = true;
+    els.pushTestBtn.classList.add("hidden");
+    return;
+  }
+
+  try {
+    const reg = await getSwRegistration();
+    const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    if (sub) {
+      state.pushSubscribed = true;
+      els.pushStatusText.textContent = "Notifications enabled on this device.";
+      setPushToggleButton("Disable Notifications", true);
+      els.pushToggleBtn.disabled = state.pushBusy;
+      els.pushTestBtn.classList.remove("hidden");
+      if (syncExisting) {
+        await apiFetch("/api/push/subscribe", {
+          method: "POST",
+          body: JSON.stringify(sub.toJSON()),
+        });
+      }
+    } else {
+      state.pushSubscribed = false;
+      els.pushStatusText.textContent =
+        "Receive a lock-screen alert when transcription and summary finish.";
+      setPushToggleButton("Enable Notifications", false);
+      els.pushToggleBtn.disabled = state.pushBusy;
+      els.pushTestBtn.classList.add("hidden");
+    }
+  } catch {
+    els.pushStatusText.textContent = "Unable to check notification subscription status.";
+    els.pushToggleBtn.disabled = false;
+    els.pushTestBtn.classList.add("hidden");
+  }
+}
+
+async function togglePushNotifications() {
+  if (state.pushBusy) return;
+  if (state.offline) {
+    showToast("You are offline — reconnect to update notification settings");
+    return;
+  }
+
+  if (state.pushSubscribed) {
+    state.pushBusy = true;
+    els.pushToggleBtn.disabled = true;
+    try {
+      const reg = await getSwRegistration();
+      const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+      if (sub) {
+        try {
+          await apiFetch("/api/push/unsubscribe", {
+            method: "POST",
+            body: JSON.stringify({ endpoint: sub.endpoint }),
+          });
+        } catch {
+          // Best-effort backend removal; still unsubscribe locally.
+        }
+        await sub.unsubscribe();
+      }
+      state.pushSubscribed = false;
+      showToast("Notifications disabled");
+    } catch (err) {
+      showToast(err.message || "Failed to disable notifications");
+    } finally {
+      state.pushBusy = false;
+      await refreshPushUi({ syncExisting: false });
+    }
+    return;
+  }
+
+  // Trigger Notification.requestPermission() synchronously from user tap for iOS WebKit.
+  let permissionPromise;
+  try {
+    permissionPromise = Notification.requestPermission();
+  } catch (err) {
+    showToast(err.message || "Notification permission request failed");
+    return;
+  }
+
+  state.pushBusy = true;
+  els.pushToggleBtn.disabled = true;
+
+  try {
+    const permission = await permissionPromise;
+    if (permission !== "granted") {
+      showToast(
+        permission === "denied"
+          ? "Notifications blocked in browser/iOS Settings"
+          : "Notification permission not granted"
+      );
+      return;
+    }
+
+    if (!state.pushConfig || !state.pushConfig.public_key) {
+      const resp = await apiFetch("/api/push/config");
+      state.pushConfig = await resp.json();
+    }
+    if (!state.pushConfig || !state.pushConfig.enabled || !state.pushConfig.public_key) {
+      showToast("Push notifications are disabled on the server");
+      return;
+    }
+
+    const reg = await getSwRegistration();
+    if (!reg || !reg.pushManager) {
+      showToast("Service worker is not ready for push subscriptions");
+      return;
+    }
+
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(state.pushConfig.public_key),
+    });
+
+    await apiFetch("/api/push/subscribe", {
+      method: "POST",
+      body: JSON.stringify(sub.toJSON()),
+    });
+    state.pushSubscribed = true;
+    showToast("Notifications enabled");
+  } catch (err) {
+    showToast(err.message || "Failed to enable notifications");
+  } finally {
+    state.pushBusy = false;
+    await refreshPushUi({ syncExisting: false });
+  }
+}
+
+async function unsubscribePushOnLogout() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration("/");
+    const sub = reg && reg.pushManager ? await reg.pushManager.getSubscription() : null;
+    if (!sub) return;
+    try {
+      await fetch("/api/push/unsubscribe", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: sub.endpoint }),
+      });
+    } catch {
+      // Best-effort server cleanup before logout.
+    }
+    await sub.unsubscribe();
+  } catch {
+    // Ignore cleanup errors during logout.
+  }
+}
+
 // Settings Modal helpers
 function openSettingsModal() {
   els.settingsSttSelect.value = getDefaultSttProvider();
   els.shortcutEndpointInput.value = `${window.location.origin}/api/meetings/quick-upload`;
   els.settingsModal.classList.remove("hidden");
+  refreshPushUi({ syncExisting: false });
 }
 
 function closeSettingsModal() {
@@ -1248,14 +1572,18 @@ els.loginForm.addEventListener("submit", async (e) => {
 });
 
 els.logoutBtn.addEventListener("click", async () => {
+  await unsubscribePushOnLogout();
   try {
     await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
   } catch {
     // Allow clearing local session even if offline.
   }
+  stopPolling();
+  stopListPolling();
   await window.NoteItDB.clearAll();
   localStorage.removeItem(LOGGED_IN_HINT_KEY);
   state.authenticated = false;
+  state.pushSubscribed = false;
   state.meetings = [];
   state.pendingUploads = [];
   state.selectedId = null;
@@ -1270,11 +1598,36 @@ els.logoutBtn.addEventListener("click", async () => {
 });
 
 els.themeToggleBtn.addEventListener("click", toggleTheme);
+els.refreshBtn.addEventListener("click", () => refreshWorkspace({ manual: true }));
 els.settingsBtn.addEventListener("click", openSettingsModal);
 els.settingsCloseBtn.addEventListener("click", closeSettingsModal);
 els.settingsSttSelect.addEventListener("change", () => {
   localStorage.setItem(DEFAULT_STT_KEY, els.settingsSttSelect.value);
   showToast("Default STT preference saved");
+});
+els.pushToggleBtn.addEventListener("click", togglePushNotifications);
+els.pushTestBtn.addEventListener("click", async () => {
+  if (state.offline) {
+    showToast("You are offline — reconnect to send a test notification");
+    return;
+  }
+  els.pushTestBtn.disabled = true;
+  try {
+    const resp = await apiFetch("/api/push/test", { method: "POST" });
+    const data = await resp.json();
+    if (data.sent > 0) {
+      showToast("Test notification sent");
+    } else if (data.removed > 0) {
+      showToast("Subscription expired — please re-enable notifications");
+      await refreshPushUi({ syncExisting: false });
+    } else {
+      showToast("Notification could not be delivered");
+    }
+  } catch (err) {
+    showToast(err.message || "Failed to send test notification");
+  } finally {
+    els.pushTestBtn.disabled = false;
+  }
 });
 
 els.copyEndpointBtn.addEventListener("click", async () => {
@@ -1633,15 +1986,39 @@ window.addEventListener("popstate", () => {
 window.addEventListener("offline", () => {
   setOffline(true);
   stopPolling();
+  stopListPolling();
 });
 
 window.addEventListener("online", () => {
   setOffline(false);
   if (state.authenticated) {
-    loadMeetings(els.searchInput.value);
-    if (state.selectedId) {
-      loadMeetingDetail(state.selectedId, { silent: true, pushHistory: false });
+    refreshWorkspace({ manual: false });
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    stopPolling();
+    stopListPolling();
+    return;
+  }
+  if (document.visibilityState === "visible" && state.authenticated) {
+    const now = Date.now();
+    if (now - state.lastResumeRefreshAt > 1500) {
+      state.lastResumeRefreshAt = now;
+      refreshWorkspace({ manual: false });
+    } else {
+      syncListPolling();
+      if (state.selectedMeeting) {
+        startPollingIfActive(state.selectedMeeting);
+      }
     }
+  }
+});
+
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && state.authenticated) {
+    refreshWorkspace({ manual: false });
   }
 });
 
@@ -1650,6 +2027,18 @@ if (window.history && "scrollRestoration" in window.history) {
 }
 
 if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || !state.authenticated) return;
+    if (data.type === "noteit-push") {
+      refreshWorkspace({ manual: false });
+    } else if (data.type === "noteit-open-meeting") {
+      loadMeetings(els.searchInput.value, { silent: true }).catch(() => {});
+      if (data.meeting_id) {
+        loadMeetingDetail(data.meeting_id, { pushHistory: true });
+      }
+    }
+  });
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 

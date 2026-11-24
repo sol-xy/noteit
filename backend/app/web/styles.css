@@ -312,6 +312,9 @@ body {
 }
 
 .search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   flex-shrink: 0;
   min-width: 0;
   max-width: 100%;
@@ -320,13 +323,35 @@ body {
 }
 
 .search-box input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   font-size: 0.9rem;
+}
+
+.refresh-btn {
+  flex-shrink: 0;
+  min-width: 38px;
+  padding: 0.45rem 0.65rem;
+}
+
+.refresh-glyph {
+  display: inline-block;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.refresh-btn.is-refreshing .refresh-glyph {
+  animation: noteit-spin 0.8s linear infinite;
+}
+
+@keyframes noteit-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .pending-uploads {

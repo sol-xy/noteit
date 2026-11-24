@@ -84,6 +84,16 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_chat_meeting_id
                     ON chat_messages(meeting_id, id);
+
+                CREATE TABLE IF NOT EXISTS push_subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    endpoint TEXT NOT NULL UNIQUE,
+                    p256dh TEXT NOT NULL,
+                    auth TEXT NOT NULL,
+                    user_agent TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             await conn.commit()
@@ -303,3 +313,62 @@ class Database:
                 """
             )
             return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_push_subscription(
+        self,
+        *,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        user_agent: str = "",
+    ) -> dict[str, Any]:
+        """Insert or update a Web Push subscription keyed by endpoint."""
+        now = utc_now_iso()
+        async with self._connect() as conn:
+            await conn.execute(
+                """
+                INSERT INTO push_subscriptions (
+                    endpoint, p256dh, auth, user_agent, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(endpoint) DO UPDATE SET
+                    p256dh = excluded.p256dh,
+                    auth = excluded.auth,
+                    user_agent = excluded.user_agent,
+                    updated_at = excluded.updated_at
+                """,
+                (endpoint, p256dh, auth, user_agent, now, now),
+            )
+            await conn.commit()
+            cur = await conn.execute(
+                "SELECT * FROM push_subscriptions WHERE endpoint = ?",
+                (endpoint,),
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            return dict(row)
+
+    async def delete_push_subscription(self, endpoint: str) -> bool:
+        """Delete a Web Push subscription by endpoint; returns True if deleted."""
+        async with self._connect() as conn:
+            cur = await conn.execute(
+                "DELETE FROM push_subscriptions WHERE endpoint = ?",
+                (endpoint,),
+            )
+            await conn.commit()
+            return cur.rowcount > 0
+
+    async def list_push_subscriptions(self) -> list[dict[str, Any]]:
+        """Return all stored Web Push subscriptions."""
+        async with self._connect() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM push_subscriptions ORDER BY id ASC"
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def count_push_subscriptions(self) -> int:
+        """Return total number of stored Web Push subscriptions."""
+        async with self._connect() as conn:
+            cur = await conn.execute("SELECT COUNT(*) AS cnt FROM push_subscriptions")
+            row = await cur.fetchone()
+            return int(row["cnt"]) if row else 0
