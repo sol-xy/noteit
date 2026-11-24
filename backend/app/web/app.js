@@ -704,8 +704,23 @@ async function retryPendingUpload(uploadId) {
   }
 }
 
+function blurActiveInput() {
+  const active = document.activeElement;
+  if (active && typeof active.blur === "function" && active !== document.body) {
+    active.blur();
+  }
+}
+
+function resetViewportScroll() {
+  if (typeof window.scrollTo === "function") {
+    window.scrollTo(0, 0);
+  }
+}
+
 function closeMobileDetail(opts = { pushHistory: true }) {
+  blurActiveInput();
   els.appView.classList.remove("mobile-detail-open");
+  resetViewportScroll();
   if (opts.pushHistory) {
     pushMeetingUrl(null);
   }
@@ -717,6 +732,10 @@ async function loadMeetingDetail(meetingId, opts = {}) {
   if (switchedMeeting) {
     state.transcriptFilter = "";
     els.transcriptFilterInput.value = "";
+  }
+  if (!opts.silent) {
+    blurActiveInput();
+    resetViewportScroll();
   }
   els.appView.classList.add("mobile-detail-open");
   if (opts.pushHistory !== false) {
@@ -1625,6 +1644,10 @@ window.addEventListener("online", () => {
     }
   }
 });
+
+if (window.history && "scrollRestoration" in window.history) {
+  window.history.scrollRestoration = "manual";
+}
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});

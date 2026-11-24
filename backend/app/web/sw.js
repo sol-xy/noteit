@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "noteit-shell-v1";
+const CACHE_NAME = "noteit-shell-v2";
 const PRECACHE_URLS = [
   "/",
   "/manifest.webmanifest",
